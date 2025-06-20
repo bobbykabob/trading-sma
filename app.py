@@ -111,10 +111,11 @@ class BreakoutStrategy(bt.Strategy):
                     self.close()
                     self.entry_price = None
 
-def get_data(symbol='ES=F'):
-    """Fetch current market data for specified symbol"""
+def get_data(symbol='ES=F', period='5d', interval='5m'):
+    """Fetch current market data for specified symbol with intraday intervals"""
     try:
-        data = yf.download(symbol, start='2020-01-01', group_by='ticker')
+        # For real-time trading, use shorter periods with minute intervals
+        data = yf.download(symbol, period=period, interval=interval, group_by='ticker')
         
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(1)
@@ -267,6 +268,31 @@ def main():
         help="Select up to 4 markets for analysis"
     )
     
+    # Data interval selection
+    st.sidebar.header("⏰ Data Frequency")
+    col1, col2 = st.sidebar.columns(2)
+    
+    with col1:
+        period = st.sidebar.selectbox(
+            "Time Period",
+            options=['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y'],
+            index=1,  # Default to 5d
+            help="Historical data period to fetch"
+        )
+    
+    with col2:
+        interval = st.sidebar.selectbox(
+            "Data Interval",
+            options=['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '1d'],
+            index=2,  # Default to 5m
+            help="Data granularity (1m-90m only work with periods ≤60 days)"
+        )
+    
+    # Display interval warning
+    if interval in ['1m', '2m', '5m', '15m', '30m', '60m', '90m'] and period in ['6mo', '1y', '2y']:
+        st.sidebar.warning("⚠️ Minute intervals only work with periods ≤60 days. Using 1h interval instead.")
+        interval = '1h'
+    
     # Strategy selection
     st.sidebar.header("📈 Strategy Selection")
     strategy_type = st.sidebar.selectbox(
@@ -278,16 +304,36 @@ def main():
     # Strategy parameters
     st.sidebar.header("⚙️ Strategy Parameters")
     
+    # Adjust default parameters based on interval
+    if interval in ['1m', '2m', '5m']:
+        default_short = 20  # 20 periods for 5min = 100 minutes
+        default_long = 50   # 50 periods for 5min = 250 minutes
+        default_lookback = 10  # 10 periods for breakout
+        max_period = 200
+    elif interval in ['15m', '30m']:
+        default_short = 12  # 12 periods for 15min = 3 hours
+        default_long = 24   # 24 periods for 15min = 6 hours
+        default_lookback = 8
+        max_period = 100
+    else:  # 1h, 1d
+        default_short = 50
+        default_long = 200
+        default_lookback = 20
+        max_period = 300
+    
     # SMA parameters
     if strategy_type in ["SMA Crossover", "Both"]:
         st.sidebar.subheader("SMA Crossover")
-        short_period = st.sidebar.slider("Short MA Period", 5, 100, 50)
-        long_period = st.sidebar.slider("Long MA Period", 50, 300, 200)
+        short_period = st.sidebar.slider("Short MA Period", 5, max_period, default_short,
+                                        help=f"Periods for short MA ({interval} intervals)")
+        long_period = st.sidebar.slider("Long MA Period", 10, max_period, default_long,
+                                       help=f"Periods for long MA ({interval} intervals)")
     
     # Breakout parameters
     if strategy_type in ["Breakout Strategy", "Both"]:
         st.sidebar.subheader("Breakout Strategy")
-        lookback_period = st.sidebar.slider("Lookback Period", 10, 50, 20)
+        lookback_period = st.sidebar.slider("Lookback Period", 5, 100, default_lookback,
+                                          help=f"Periods for support/resistance ({interval} intervals)")
         volume_factor = st.sidebar.slider("Volume Factor", 1.0, 3.0, 1.5, 0.1)
         stop_loss = st.sidebar.slider("Stop Loss %", 1, 20, 5) / 100
         take_profit = st.sidebar.slider("Take Profit %", 5, 50, 10) / 100
@@ -308,7 +354,7 @@ def main():
         with st.spinner("Fetching latest market data..."):
             st.session_state.market_data = {}
             for symbol in selected_markets:
-                data = get_data(symbol)
+                data = get_data(symbol, period=period, interval=interval)
                 if data is not None:
                     st.session_state.market_data[symbol] = data
             st.session_state.last_update = datetime.now()
@@ -412,19 +458,36 @@ def main():
                             st.info("⏳ CONSOLIDATION - Waiting for breakout")
             
             # Recent data table
-            with st.expander(f"📋 Recent {symbol} Data"):
-                st.dataframe(data.tail(10))
+            with st.expander(f"📋 Recent {symbol} Data ({interval} intervals)"):
+                recent_data = data.tail(10).copy()
+                # Format timestamp to show time
+                recent_data.index = recent_data.index.strftime('%Y-%m-%d %H:%M:%S')
+                st.dataframe(recent_data)
             
             st.markdown("---")
         
         # Market status
         st.header("🔴 Live Market Status")
         current_time = datetime.now()
+        
+        # Format interval display
+        interval_display = {
+            '1m': '1 minute', '2m': '2 minutes', '5m': '5 minutes',
+            '15m': '15 minutes', '30m': '30 minutes', '60m': '1 hour',
+            '90m': '90 minutes', '1h': '1 hour', '1d': '1 day'
+        }
+        
         market_hours = "Market hours: 9:30 AM - 4:00 PM ET (Mon-Fri) | Futures: Nearly 24/5"
-        st.info(f"Current Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')} | {market_hours}")
+        data_info = f"Data Frequency: {interval_display.get(interval, interval)} | Period: {period}"
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info(f"Current Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')} | {market_hours}")
+        with col2:
+            st.info(f"{data_info}")
         
         if st.session_state.last_update:
-            st.success(f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')}")
+            st.success(f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')} | Next refresh in {30 - (current_time.second % 30)} seconds" if auto_refresh else f"Last Update: {st.session_state.last_update.strftime('%H:%M:%S')}")
         
     else:
         st.error("Failed to load market data. Please check your internet connection and try again.")
